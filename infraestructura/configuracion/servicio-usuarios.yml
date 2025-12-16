@@ -1,0 +1,36 @@
+server:
+  port: 0
+
+spring:
+  application:
+    name: servicio-usuarios
+
+  datasource:
+    url: jdbc:postgresql://localhost:5432/bd_usuarios
+    username: postgres
+    password: postgres123
+
+  jpa:
+    hibernate:
+      ddl-auto: validate
+    open-in-view: false
+
+  flyway:
+    enabled: true
+
+  security:
+    oauth2:
+      resourceserver:
+        jwt:
+          issuer-uri: http://localhost:8080/realms/erp
+
+eureka:
+  client:
+    service-url:
+      defaultZone: http://localhost:8761/eureka/
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,mappings

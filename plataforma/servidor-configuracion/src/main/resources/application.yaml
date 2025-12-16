@@ -1,0 +1,16 @@
+server:
+  port: 8888
+
+spring:
+  application:
+    name: servidor-configuracion
+
+  profiles:
+    active: native
+
+  cloud:
+    config:
+      server:
+        native:
+          search-locations: file:C:\Users\HP\Desktop\erp-microservicio\infraestructura\configuracion/
+
