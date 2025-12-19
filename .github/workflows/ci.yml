@@ -62,6 +62,8 @@ jobs:
       - name: Build & Test con Maven Wrapper
         working-directory: ${{ matrix.module }}
         shell: bash
+        env:
+          SPRING_PROFILES_ACTIVE: test
         run: |
           chmod +x mvnw
           ./mvnw -B -ntp clean verify
