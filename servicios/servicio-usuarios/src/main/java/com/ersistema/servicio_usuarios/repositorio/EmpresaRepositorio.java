@@ -5,5 +5,6 @@ import com.ersistema.servicio_usuarios.dominio.Empresa;
 import org.springframework.data.jpa.repository.JpaRepository;
 
 public interface EmpresaRepositorio extends JpaRepository<Empresa, Long> {
+    boolean existsByNombreIgnoreCase(String nombre);
 }
 

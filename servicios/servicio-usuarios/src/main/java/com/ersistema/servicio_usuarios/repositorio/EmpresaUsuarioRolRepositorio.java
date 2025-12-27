@@ -22,5 +22,10 @@ public interface EmpresaUsuarioRolRepositorio
             String keycloakId,
             String codigoRol
     );
+    boolean existsByEmpresaUsuario_Empresa_IdEmpresaAndRol_CodigoAndEstadoTrue(
+            Long idEmpresa,
+            String codigoRol
+    );
+
 
 }
