@@ -24,8 +24,7 @@ spring:
     oauth2:
       resourceserver:
         jwt:
-          issuer-uri: http://localhost:8080/realms/erp
-          jwk-set-uri: http://localhost:8080/realms/erp/protocol/openid-connect/certs
+          issuer-uri: http://localhost:8080/realms/micro
 
 eureka:
   client:
@@ -43,3 +42,12 @@ springdoc:
     path: /swagger-ui.html
   api-docs:
     path: /v3/api-docs
+
+keycloak:
+  admin:
+    base-url: http://localhost:8080
+    realm: micro
+    client-id: erp-admin
+    client-secret: oO4n7SzFLYqpcYPQVsnhFk6icpM5S3tt
+    username: admin
+    password: admin

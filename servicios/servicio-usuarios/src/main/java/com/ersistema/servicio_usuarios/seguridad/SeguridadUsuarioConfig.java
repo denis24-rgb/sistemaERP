@@ -71,8 +71,7 @@ public class SeguridadUsuarioConfig {
                     }
                 }
             }
-
-            // 3) resource_access[CLIENT_ID].roles -> permisos tal cual: roles:asignar
+// 3) resource_access[CLIENT_ID].roles
             Map<String, Object> resourceAccess = jwt.getClaim("resource_access");
             if (resourceAccess != null) {
                 Object clientObj = resourceAccess.get(CLIENT_ID);
@@ -80,11 +79,20 @@ public class SeguridadUsuarioConfig {
                     Object clientRolesObj = clientMap.get("roles");
                     if (clientRolesObj instanceof Collection<?> clientRoles) {
                         for (Object r : clientRoles) {
-                            authorities.add(new SimpleGrantedAuthority(r.toString()));
+                            String role = r.toString();
+
+                            // Si es un rol de negocio (ADMIN, VENTAS, COMPRAS) => también como ROLE_*
+                            if (role.matches("^[A-Z0-9_]+$")) {
+                                authorities.add(new SimpleGrantedAuthority("ROLE_" + role));
+                            }
+
+                            // Siempre agregarlo como authority plano (para permisos tipo roles:asignar)
+                            authorities.add(new SimpleGrantedAuthority(role));
                         }
                     }
                 }
             }
+
 
             return authorities;
         });

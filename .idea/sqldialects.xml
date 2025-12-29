@@ -3,5 +3,6 @@
   <component name="SqlDialectMappings">
     <file url="file://$PROJECT_DIR$/servicios/servicio-usuarios/src/main/resources/db/migration/V1__inicial.sql" dialect="PostgreSQL" />
     <file url="file://$PROJECT_DIR$/servicios/servicio-usuarios/src/main/resources/db/migration/V2__insert_roles.sql" dialect="PostgreSQL" />
+    <file url="file://$PROJECT_DIR$/servicios/servicio-usuarios/src/main/resources/db/migration/V3__keycloak_roles_fuera_bd.sql" dialect="GenericSQL" />
   </component>
 </project>

@@ -1,26 +1,28 @@
 package com.ersistema.servicio_usuarios.servicio;
 
-
-import com.ersistema.servicio_usuarios.dominio.*;
+import com.ersistema.servicio_usuarios.dominio.Empresa;
+import com.ersistema.servicio_usuarios.dominio.EmpresaUsuario;
+import com.ersistema.servicio_usuarios.dominio.UsuarioErp;
 import com.ersistema.servicio_usuarios.dto.CrearEmpresaRequest;
 import com.ersistema.servicio_usuarios.dto.PerfilUsuarioDto;
 import com.ersistema.servicio_usuarios.dto.ResultadoAutoRegistroDto;
+import com.ersistema.servicio_usuarios.dto.UsuarioEmpresaResumenDto;
+import com.ersistema.servicio_usuarios.excepcion.BadRequestException;
 import com.ersistema.servicio_usuarios.excepcion.ConflictException;
 import com.ersistema.servicio_usuarios.excepcion.ForbiddenException;
-import com.ersistema.servicio_usuarios.repositorio.*;
-import lombok.RequiredArgsConstructor;
-import org.springframework.security.oauth2.jwt.Jwt;
-import org.springframework.stereotype.Service;
-import org.springframework.transaction.annotation.Transactional;
 import com.ersistema.servicio_usuarios.excepcion.NotFoundException;
-import com.ersistema.servicio_usuarios.excepcion.BadRequestException;
+import com.ersistema.servicio_usuarios.keycloak.KeycloakAdminService;
+import com.ersistema.servicio_usuarios.repositorio.EmpresaRepositorio;
+import com.ersistema.servicio_usuarios.repositorio.EmpresaUsuarioRepositorio;
+import com.ersistema.servicio_usuarios.repositorio.UsuarioErpRepositorio;
+import lombok.RequiredArgsConstructor;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
-import com.ersistema.servicio_usuarios.dto.UsuarioEmpresaResumenDto;
+import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
 
 import java.time.LocalDateTime;
-import java.util.List;
-import java.util.Map;
+import java.util.*;
 
 @Service
 @RequiredArgsConstructor
@@ -29,19 +31,20 @@ public class UsuariosServicio {
     private final UsuarioErpRepositorio usuarioRepo;
     private final EmpresaRepositorio empresaRepo;
     private final EmpresaUsuarioRepositorio empresaUsuarioRepo;
-    private final EmpresaUsuarioRolRepositorio empresaUsuarioRolRepo;
-    private final RolRepositorio rolRepo;
 
+    // ✅ Keycloak Admin API (tu clase)
+    private final KeycloakAdminService keycloakAdminService;
+
+    // =========================
+    // AUTO-REGISTRO (membresía)
+    // =========================
     @Transactional
     public ResultadoAutoRegistroDto autoRegistrar(
             String keycloakId,
             String nombre,
             String email,
-            Long idEmpresa,
-            List<String> rolesKeycloak
+            Long idEmpresa
     ) {
-
-        // 0) Validaciones mínimas
         if (keycloakId == null || keycloakId.isBlank()) {
             throw new BadRequestException("Token inválido: sub vacío.");
         }
@@ -49,11 +52,9 @@ public class UsuariosServicio {
             throw new BadRequestException("idEmpresa es obligatorio.");
         }
 
-        // 1) Validar empresa
         Empresa empresa = empresaRepo.findById(idEmpresa)
                 .orElseThrow(() -> new NotFoundException("La empresa no existe: " + idEmpresa));
 
-        // 2) Crear u obtener usuario ERP
         UsuarioErp usuario = usuarioRepo.findByKeycloakId(keycloakId)
                 .orElseGet(() -> usuarioRepo.save(
                         UsuarioErp.builder()
@@ -64,7 +65,6 @@ public class UsuariosServicio {
                                 .build()
                 ));
 
-        // 3) Crear u obtener relación empresa_usuario
         EmpresaUsuario empresaUsuario = empresaUsuarioRepo
                 .findByEmpresa_IdEmpresaAndUsuario_IdUsuarioErp(
                         empresa.getIdEmpresa(),
@@ -78,55 +78,10 @@ public class UsuariosServicio {
                                 .build()
                 ));
 
-        // Si existe la relación pero estaba inactiva, la reactivamos
         if (!Boolean.TRUE.equals(empresaUsuario.getEstado())) {
             empresaUsuario.setEstado(true);
         }
 
-        // 4) Guardar SOLO roles del token (ej: ADMIN) en la BD para ESTA empresa
-        if (rolesKeycloak != null && !rolesKeycloak.isEmpty()) {
-
-            // Normalizamos roles de negocio (MAYÚSCULAS)
-            List<String> rolesNormalizados = rolesKeycloak.stream()
-                    .filter(java.util.Objects::nonNull)
-                    .map(String::trim)
-                    .filter(r -> !r.isBlank())
-                    .map(String::toUpperCase)
-                    .distinct()
-                    .toList();
-
-            for (String codigo : rolesNormalizados) {
-
-                // Upsert en tabla Rol (crea si no existe)
-                Rol rol = rolRepo.findByCodigo(codigo)
-                        .orElseGet(() -> {
-                            // ⚠️ Ajusta aquí si tu entidad Rol requiere más campos obligatorios
-                            return rolRepo.save(
-                                    Rol.builder()
-                                            .codigo(codigo)
-                                            .build()
-                            );
-                        });
-
-                // Upsert relación EmpresaUsuarioRol
-                empresaUsuarioRolRepo
-                        .findByEmpresaUsuario_IdEmpresaUsuarioAndRol_IdRol(
-                                empresaUsuario.getIdEmpresaUsuario(),
-                                rol.getIdRol()
-                        )
-                        .ifPresentOrElse(
-                                existente -> existente.setEstado(true),
-                                () -> empresaUsuarioRolRepo.save(
-                                        EmpresaUsuarioRol.builder()
-                                                .empresaUsuario(empresaUsuario)
-                                                .rol(rol)
-                                                .estado(true)
-                                                .build()
-                                )
-                        );
-            }
-        }
-        // 5) Respuesta
         return ResultadoAutoRegistroDto.builder()
                 .idUsuarioErp(usuario.getIdUsuarioErp())
                 .keycloakId(usuario.getKeycloakId())
@@ -137,192 +92,92 @@ public class UsuariosServicio {
                 .build();
     }
 
+    // =========================
+    // ROLES POR EMPRESA (Keycloak)
+    // =========================
 
     @Transactional
-    public void asignarRolesEmpresa(
-            Long idEmpresa,
-            Long idUsuarioErp,
-            List<String> codigosRol
-    ) {
-        // ✅ valida + normaliza
-        codigosRol = normalizarRoles(codigosRol);
-
-        EmpresaUsuario eu = empresaUsuarioRepo
-                .findByEmpresa_IdEmpresaAndUsuario_IdUsuarioErp(idEmpresa, idUsuarioErp)
-                .orElseThrow(() -> new NotFoundException("El usuario no pertenece a la empresa"));
-        if (!Boolean.TRUE.equals(eu.getEstado())) {
-            throw new BadRequestException("El usuario está inactivo en la empresa.");
-        }
-
-        for (String codigo : codigosRol) {
-            Rol rol = rolRepo.findByCodigo(codigo)
-                    .orElseThrow(() -> new NotFoundException("Rol no existe: " + codigo));
-
-            empresaUsuarioRolRepo
-                    .findByEmpresaUsuario_IdEmpresaUsuarioAndRol_IdRol(
-                            eu.getIdEmpresaUsuario(),
-                            rol.getIdRol()
-                    )
-                    .ifPresentOrElse(
-                            existente -> existente.setEstado(true),
-                            () -> empresaUsuarioRolRepo.save(
-                                    EmpresaUsuarioRol.builder()
-                                            .empresaUsuario(eu)
-                                            .rol(rol)
-                                            .estado(true)
-                                            .build()
-                            )
-                    );
-        }
-    }
-    @Transactional(readOnly = true)
-    public List<String> obtenerRolesEmpresa(Long idEmpresa, Long idUsuarioErp) {
-
-        EmpresaUsuario eu = empresaUsuarioRepo
-                .findByEmpresa_IdEmpresaAndUsuario_IdUsuarioErp(idEmpresa, idUsuarioErp)
-                .orElseThrow(() -> new NotFoundException("El usuario no pertenece a la empresa"));
-
-        return empresaUsuarioRolRepo
-                .findByEmpresaUsuario_IdEmpresaUsuarioAndEstadoTrue(eu.getIdEmpresaUsuario())
-                .stream()
-                .map(eur -> eur.getRol().getCodigo())
-                .toList();
-    }
-
-    @Transactional(readOnly = true)
-    public boolean tienePermiso(Long idEmpresa, String keycloakId, String codigoRol) {
-        if (keycloakId == null || keycloakId.isBlank()) return false;
-        if (codigoRol == null || codigoRol.isBlank()) return false;
-
-        return empresaUsuarioRolRepo
-                .existsByEmpresaUsuario_Empresa_IdEmpresaAndEmpresaUsuario_Usuario_KeycloakIdAndRol_CodigoAndEstadoTrue(
-                        idEmpresa,
-                        keycloakId,
-                        codigoRol.toUpperCase()
-                );
-    }
-    private List<String> normalizarRoles(List<String> roles) {
-        if (roles == null || roles.isEmpty()) {
-            throw new BadRequestException("La lista de roles no puede estar vacía.");
-        }
-
-        List<String> normalizados = roles.stream()
-                .map(r -> r == null ? "" : r.trim())
-                .map(String::toUpperCase)
-                .filter(r -> !r.isBlank())
-                .distinct()
-                .toList();
-
-        if (normalizados.isEmpty()) {
-            throw new BadRequestException("La lista de roles no puede contener valores vacíos.");
-        }
-
-        // Si el usuario mandó roles pero todos eran basura (espacios/null), aquí lo detectas.
-        // Si quieres ser más estricto y detectar cualquier rol inválido:
-        long invalidos = roles.stream().filter(r -> r == null || r.trim().isEmpty()).count();
-        if (invalidos > 0) {
-            throw new BadRequestException("La lista de roles contiene valores vacíos o nulos.");
-        }
-
-        return normalizados;
-    }
-    @Transactional(readOnly = true)
-    public Page<UsuarioEmpresaResumenDto> listarUsuariosPorEmpresa(Long idEmpresa, Pageable pageable, boolean incluirRoles) {
-
-        // valida que exista empresa (404)
-        empresaRepo.findById(idEmpresa)
-                .orElseThrow(() -> new NotFoundException("La empresa no existe: " + idEmpresa));
-
-        Page<EmpresaUsuario> page = empresaUsuarioRepo.findByEmpresa_IdEmpresa(idEmpresa, pageable);
-
-        return page.map(eu -> {
-            UsuarioErp u = eu.getUsuario();
-
-            List<String> roles = null;
-            if (incluirRoles) {
-                roles = empresaUsuarioRolRepo
-                        .findByEmpresaUsuario_IdEmpresaUsuarioAndEstadoTrue(eu.getIdEmpresaUsuario())
-                        .stream()
-                        .map(eur -> eur.getRol().getCodigo())
-                        .toList();
-            }
-
-            return UsuarioEmpresaResumenDto.builder()
-                    .idUsuario(u.getIdUsuarioErp())
-                    .nombre(u.getNombre())
-                    .email(u.getEmail())
-                    .estado(eu.getEstado())
-                    .roles(roles)
-                    .build();
-        });
-    }
-    @Transactional
-    public void cambiarEstadoUsuarioEnEmpresa(Long idEmpresa, Long idUsuarioErp, Boolean estado) {
-        if (estado == null) {
-            throw new BadRequestException("El campo estado es obligatorio.");
-        }
-
-        EmpresaUsuario eu = empresaUsuarioRepo
-                .findByEmpresa_IdEmpresaAndUsuario_IdUsuarioErp(idEmpresa, idUsuarioErp)
-                .orElseThrow(() -> new NotFoundException("El usuario no pertenece a la empresa"));
-
-        eu.setEstado(estado);
-    }
-    @Transactional
-    public void quitarRol(Long idEmpresa, Long idUsuarioErp, String codigoRol) {
-        if (codigoRol == null || codigoRol.isBlank()) {
-            throw new BadRequestException("codigoRol no puede estar vacío.");
-        }
-        String rolNorm = codigoRol.trim().toUpperCase();
-
-        EmpresaUsuario eu = empresaUsuarioRepo
-                .findByEmpresa_IdEmpresaAndUsuario_IdUsuarioErp(idEmpresa, idUsuarioErp)
-                .orElseThrow(() -> new NotFoundException("El usuario no pertenece a la empresa"));
-
-        Rol rol = rolRepo.findByCodigo(rolNorm)
-                .orElseThrow(() -> new NotFoundException("Rol no existe: " + rolNorm));
-
-        EmpresaUsuarioRol eur = empresaUsuarioRolRepo
-                .findByEmpresaUsuario_IdEmpresaUsuarioAndRol_IdRol(eu.getIdEmpresaUsuario(), rol.getIdRol())
-                .orElseThrow(() -> new NotFoundException("El usuario no tiene asignado el rol: " + rolNorm));
-
-        eur.setEstado(false);
-    }
-    @Transactional
-    public void reemplazarRoles(Long idEmpresa, Long idUsuarioErp, List<String> roles) {
-
+    public void asignarRolesEmpresa(Long idEmpresa, Long idUsuarioErp, List<String> roles) {
         List<String> nuevos = normalizarRoles(roles);
 
         EmpresaUsuario eu = empresaUsuarioRepo
                 .findByEmpresa_IdEmpresaAndUsuario_IdUsuarioErp(idEmpresa, idUsuarioErp)
                 .orElseThrow(() -> new NotFoundException("El usuario no pertenece a la empresa"));
 
-        // 1) desactivar todos
-        empresaUsuarioRolRepo
-                .findByEmpresaUsuario_IdEmpresaUsuarioAndEstadoTrue(eu.getIdEmpresaUsuario())
-                .forEach(eur -> eur.setEstado(false));
+        if (!Boolean.TRUE.equals(eu.getEstado())) {
+            throw new BadRequestException("El usuario está inactivo en la empresa.");
+        }
 
-        // 2) activar/asignar los nuevos
-        for (String codigo : nuevos) {
-            Rol rol = rolRepo.findByCodigo(codigo)
-                    .orElseThrow(() -> new NotFoundException("Rol no existe: " + codigo));
-
-            empresaUsuarioRolRepo
-                    .findByEmpresaUsuario_IdEmpresaUsuarioAndRol_IdRol(eu.getIdEmpresaUsuario(), rol.getIdRol())
-                    .ifPresentOrElse(
-                            existente -> existente.setEstado(true),
-                            () -> empresaUsuarioRolRepo.save(
-                                    EmpresaUsuarioRol.builder()
-                                            .empresaUsuario(eu)
-                                            .rol(rol)
-                                            .estado(true)
-                                            .build()
-                            )
-                    );
+        String keycloakUserId = eu.getUsuario().getKeycloakId(); // debe ser UUID (sub)
+        for (String rol : nuevos) {
+            keycloakAdminService.addUserToEmpresaRole(idEmpresa, rol, keycloakUserId);
         }
     }
+
     @Transactional(readOnly = true)
-    public PerfilUsuarioDto obtenerMiPerfil(Long idEmpresa, String keycloakId) {
+    public List<String> obtenerRolesEmpresa(Long idEmpresa, Long idUsuarioErp) {
+        EmpresaUsuario eu = empresaUsuarioRepo
+                .findByEmpresa_IdEmpresaAndUsuario_IdUsuarioErp(idEmpresa, idUsuarioErp)
+                .orElseThrow(() -> new NotFoundException("El usuario no pertenece a la empresa"));
+
+        String keycloakIdTarget = eu.getUsuario().getKeycloakId();
+        List<String> groups = keycloakAdminService.getUserGroupPaths(keycloakIdTarget);
+
+        String prefix = "/empresa-" + idEmpresa + "/";
+        return groups.stream()
+                .filter(g -> g != null && g.startsWith(prefix))
+                .map(g -> g.substring(prefix.length()))
+                .filter(r -> !r.isBlank())
+                .distinct()
+                .toList();
+    }
+
+    @Transactional
+    public void quitarRol(Long idEmpresa, Long idUsuarioErp, String codigoRol) {
+        if (codigoRol == null || codigoRol.isBlank()) {
+            throw new BadRequestException("codigoRol no puede estar vacío.");
+        }
+
+        EmpresaUsuario eu = empresaUsuarioRepo
+                .findByEmpresa_IdEmpresaAndUsuario_IdUsuarioErp(idEmpresa, idUsuarioErp)
+                .orElseThrow(() -> new NotFoundException("El usuario no pertenece a la empresa"));
+
+        String keycloakUserId = eu.getUsuario().getKeycloakId();
+        keycloakAdminService.removeUserFromEmpresaRole(idEmpresa, codigoRol, keycloakUserId);
+    }
+
+    @Transactional
+    public void reemplazarRoles(Long idEmpresa, Long idUsuarioErp, List<String> roles) {
+        List<String> nuevos = normalizarRoles(roles);
+
+        EmpresaUsuario eu = empresaUsuarioRepo
+                .findByEmpresa_IdEmpresaAndUsuario_IdUsuarioErp(idEmpresa, idUsuarioErp)
+                .orElseThrow(() -> new NotFoundException("El usuario no pertenece a la empresa"));
+
+        String keycloakIdTarget = eu.getUsuario().getKeycloakId();
+        String prefix = "/empresa-" + idEmpresa + "/";
+
+        // 1) quitar roles actuales de esa empresa
+        List<String> actuales = keycloakAdminService.getUserGroupPaths(keycloakIdTarget);
+        actuales.stream()
+                .filter(g -> g != null && g.startsWith(prefix))
+                .filter(g -> g.split("/").length == 3)
+                .forEach(g -> {
+                    String rol = g.substring(prefix.length());
+                    keycloakAdminService.removeUserFromEmpresaRole(idEmpresa, rol, keycloakIdTarget);
+                });
+        // 2) asignar nuevos
+        for (String rol : nuevos) {
+            keycloakAdminService.addUserToGroupByPath(keycloakIdTarget, prefix + rol);
+        }
+    }
+
+    // =========================
+    // MEMBRESÍA / PERFIL
+    // =========================
+
+    @Transactional(readOnly = true)
+    public PerfilUsuarioDto obtenerMiPerfil(Long idEmpresa, String keycloakId, List<String> rolesDesdeToken) {
         if (keycloakId == null || keycloakId.isBlank()) {
             throw new BadRequestException("Token inválido: sub vacío.");
         }
@@ -334,12 +189,6 @@ public class UsuariosServicio {
                 .findByEmpresa_IdEmpresaAndUsuario_IdUsuarioErp(idEmpresa, usuario.getIdUsuarioErp())
                 .orElseThrow(() -> new NotFoundException("El usuario no pertenece a la empresa"));
 
-        List<String> roles = empresaUsuarioRolRepo
-                .findByEmpresaUsuario_IdEmpresaUsuarioAndEstadoTrue(eu.getIdEmpresaUsuario())
-                .stream()
-                .map(eur -> eur.getRol().getCodigo())
-                .toList();
-
         return PerfilUsuarioDto.builder()
                 .idUsuario(usuario.getIdUsuarioErp())
                 .keycloakId(usuario.getKeycloakId())
@@ -347,9 +196,11 @@ public class UsuariosServicio {
                 .email(usuario.getEmail())
                 .idEmpresa(idEmpresa)
                 .estado(eu.getEstado())
-                .roles(roles)
+                // ✅ aquí NO se consulta BD, viene del token (o null si no lo mandas)
+                .roles(rolesDesdeToken)
                 .build();
     }
+
     @Transactional(readOnly = true)
     public void validarPerteneceEmpresa(Long idEmpresa, String keycloakId) {
         if (keycloakId == null || keycloakId.isBlank()) {
@@ -367,67 +218,89 @@ public class UsuariosServicio {
             throw new ForbiddenException("Tu usuario está inactivo en la empresa: " + idEmpresa);
         }
     }
+
+    @Transactional(readOnly = true)
+    public Page<UsuarioEmpresaResumenDto> listarUsuariosPorEmpresa(Long idEmpresa, Pageable pageable, boolean incluirRoles) {
+        empresaRepo.findById(idEmpresa)
+                .orElseThrow(() -> new NotFoundException("La empresa no existe: " + idEmpresa));
+
+        Page<EmpresaUsuario> page = empresaUsuarioRepo.findByEmpresa_IdEmpresa(idEmpresa, pageable);
+
+        return page.map(eu -> {
+            UsuarioErp u = eu.getUsuario();
+            List<String> roles = null;
+
+            if (incluirRoles) {
+                // ⚠️ Esto hace llamadas a Keycloak por usuario (OK para admin y pocas filas).
+                // En producción lo optimizas con cache o batch.
+                roles = obtenerRolesPorKeycloakGroupPaths(idEmpresa, u.getKeycloakId());
+            }
+
+            return UsuarioEmpresaResumenDto.builder()
+                    .idUsuario(u.getIdUsuarioErp())
+                    .nombre(u.getNombre())
+                    .email(u.getEmail())
+                    .estado(eu.getEstado())
+                    .roles(roles)
+                    .build();
+        });
+    }
+
+    private List<String> obtenerRolesPorKeycloakGroupPaths(Long idEmpresa, String keycloakId) {
+        List<String> groups = keycloakAdminService.getUserGroupPaths(keycloakId);
+        String prefix = "/empresa-" + idEmpresa + "/";
+        return groups.stream()
+                .filter(g -> g != null && g.startsWith(prefix))
+                .map(g -> g.substring(prefix.length()))
+                .filter(r -> !r.isBlank())
+                .distinct()
+                .toList();
+    }
+
+    @Transactional
+    public void cambiarEstadoUsuarioEnEmpresa(Long idEmpresa, Long idUsuarioErp, Boolean estado) {
+        if (estado == null) throw new BadRequestException("El campo estado es obligatorio.");
+
+        EmpresaUsuario eu = empresaUsuarioRepo
+                .findByEmpresa_IdEmpresaAndUsuario_IdUsuarioErp(idEmpresa, idUsuarioErp)
+                .orElseThrow(() -> new NotFoundException("El usuario no pertenece a la empresa"));
+
+        eu.setEstado(estado);
+    }
+
     @Transactional
     public Long crearEmpresa(CrearEmpresaRequest request) {
         String nombre = request.getNombre().trim();
 
-        // (opcional) evitar duplicados por nombre si quieres
         boolean existe = empresaRepo.existsByNombreIgnoreCase(nombre);
-         if (existe) throw new ConflictException("Ya existe una empresa con ese nombre.");
+        if (existe) throw new ConflictException("Ya existe una empresa con ese nombre.");
 
         Empresa empresa = Empresa.builder()
                 .nombre(nombre)
-                // si tienes estos campos en la entidad Empresa
                 .nit(request.getNit())
                 .razonSocial(request.getRazonSocial())
                 .estado(true)
                 .fechaRegistro(LocalDateTime.now())
                 .build();
 
-        Empresa guardada = empresaRepo.save(empresa);
-        return guardada.getIdEmpresa();
+        return empresaRepo.save(empresa).getIdEmpresa();
     }
-//    @Transactional(readOnly = true)
-//    public void exigirAdminEmpresa(Long idEmpresa, String keycloakId) {
-//
-//        boolean esAdmin = empresaUsuarioRolRepo
-//                .existsByEmpresaUsuario_Empresa_IdEmpresaAndEmpresaUsuario_Usuario_KeycloakIdAndRol_CodigoAndEstadoTrue(
-//                        idEmpresa,
-//                        keycloakId,
-//                        "ADMIN"
-//                );
-//
-//        if (!esAdmin) {
-//            throw new ForbiddenException(
-//                    "Solo un ADMIN de la empresa puede realizar esta acción."
-//            );
-//        }
-//    }
-//    @Transactional(readOnly = true)
-//    public boolean tienePermisoToken(Jwt jwt, String permiso) {
-//        if (permiso == null || permiso.isBlank()) return false;
-//
-//        Map<String, Object> resourceAccess = jwt.getClaim("resource_access");
-//        if (resourceAccess == null) return false;
-//
-//        Object clientObj = resourceAccess.get("erp-backend");
-//        if (!(clientObj instanceof Map<?, ?> clientMap)) return false;
-//
-//        Object rolesObj = clientMap.get("roles");
-//        if (!(rolesObj instanceof java.util.Collection<?> roles)) return false;
-//
-//        return roles.stream().anyMatch(r -> permiso.equalsIgnoreCase(r.toString()));
-//    }
 
+    private List<String> normalizarRoles(List<String> roles) {
+        if (roles == null || roles.isEmpty()) {
+            throw new BadRequestException("La lista de roles no puede estar vacía.");
+        }
 
+        List<String> normalizados = roles.stream()
+                .map(r -> r == null ? "" : r.trim())
+                .map(String::toUpperCase)
+                .filter(r -> !r.isBlank())
+                .distinct()
+                .toList();
 
-
-
-
-
-
-
-
-
-
+        if (normalizados.isEmpty()) {
+            throw new BadRequestException("La lista de roles no puede contener valores vacíos.");
+        }
+        return normalizados;
+    }
 }

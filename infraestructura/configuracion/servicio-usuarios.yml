@@ -1,5 +1,5 @@
 server:
-  port: 8083
+  port: 0
 
 spring:
   application:
@@ -22,7 +22,14 @@ spring:
     oauth2:
       resourceserver:
         jwt:
-          issuer-uri: http://localhost:8080/realms/erp
+          issuer-uri: http://localhost:8080/realms/micro
+keycloak:
+  admin:
+    server-url: http://keycloak-erp:8080
+    realm: micro
+    client-id: erp-admin
+    client-secret: oO4n7SzFLYqpcYPQVsnhFk6icpM5S3tt
+    grant-type: client_credentials
 
 eureka:
   client:
