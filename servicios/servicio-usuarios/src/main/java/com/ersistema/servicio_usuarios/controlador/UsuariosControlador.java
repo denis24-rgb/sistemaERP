@@ -10,6 +10,8 @@ import org.springframework.data.domain.Pageable;
 import org.springframework.data.web.PageableDefault;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.access.prepost.PreAuthorize;
+import org.springframework.security.core.Authentication;
+import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.security.oauth2.jwt.Jwt;
 import org.springframework.web.bind.annotation.*;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
@@ -23,22 +25,11 @@ public class UsuariosControlador {
 
     private final UsuariosServicio usuariosServicio;
 
-    @PostMapping("/auto-registro")
+    @PostMapping("/empresas/{idEmpresa}/auto-registro")
     public ResponseEntity<ResultadoAutoRegistroDto> autoRegistro(
-            @RequestHeader(value = "X-Empresa-Id", required = false) String idEmpresaHeader,
+            @PathVariable Long idEmpresa,
             @AuthenticationPrincipal Jwt jwt
     ) {
-        if (idEmpresaHeader == null || idEmpresaHeader.isBlank()) {
-            throw new BadRequestException("Falta el header X-Empresa-Id.");
-        }
-
-        final Long idEmpresa;
-        try {
-            idEmpresa = Long.parseLong(idEmpresaHeader.trim());
-        } catch (NumberFormatException e) {
-            throw new BadRequestException("El header X-Empresa-Id debe ser un número válido.");
-        }
-
         String keycloakId = jwt.getSubject();
         String nombre = jwt.getClaimAsString("name");
         String email = jwt.getClaimAsString("email");
@@ -49,7 +40,10 @@ public class UsuariosControlador {
         return ResponseEntity.ok(resultado);
     }
 
-    @PreAuthorize("hasRole('ADMIN') or hasAuthority('roles:asignar')")
+
+    @PreAuthorize("@authz.enEmpresa(#idEmpresa, authentication) and " +
+            "(hasRole('ADMIN') or @authz.esAdminEmpresa(#idEmpresa, authentication) or" +
+            " hasAuthority('roles:asignar'))")
     @PostMapping("/empresas/{idEmpresa}/usuarios/{idUsuario}/roles")
     public ResponseEntity<Void> asignarRoles(
             @PathVariable Long idEmpresa,
@@ -62,18 +56,22 @@ public class UsuariosControlador {
         return ResponseEntity.ok().build();
     }
 
-    @PreAuthorize("hasRole('ADMIN') or hasAuthority('roles:obtener')")
+    @PreAuthorize("@authz.enEmpresa(#idEmpresa, authentication) and " +
+            "(hasRole('ADMIN') or @authz.esAdminEmpresa(#idEmpresa, authentication) or" +
+            " hasAuthority('roles:obtener'))")
     @GetMapping("/empresas/{idEmpresa}/usuarios/{idUsuario}/roles")
     public ResponseEntity<List<String>> obtenerRoles(
             @PathVariable Long idEmpresa,
             @PathVariable Long idUsuario,
             @AuthenticationPrincipal Jwt jwt
     ) {
+
         usuariosServicio.validarPerteneceEmpresa(idEmpresa, jwt.getSubject());
         return ResponseEntity.ok(usuariosServicio.obtenerRolesEmpresa(idEmpresa, idUsuario));
     }
 
-    @PreAuthorize("hasRole('ADMIN')")
+    @PreAuthorize("@authz.enEmpresa(#idEmpresa, authentication) and " +
+            "(hasRole('ADMIN') or @authz.esAdminEmpresa(#idEmpresa, authentication))")
     @GetMapping("/empresas/{idEmpresa}")
     public ResponseEntity<Page<UsuarioEmpresaResumenDto>> listarUsuariosPorEmpresa(
             @PathVariable Long idEmpresa,
@@ -87,7 +85,9 @@ public class UsuariosControlador {
         );
     }
 
-    @PreAuthorize("hasRole('ADMIN') or hasAuthority('roles:cambiarEstado')")
+    @PreAuthorize("@authz.enEmpresa(#idEmpresa, authentication) and " +
+            "(hasRole('ADMIN') or @authz.esAdminEmpresa(#idEmpresa, authentication) or " +
+            "hasAuthority('roles:cambiarEstado'))")
     @PatchMapping("/empresas/{idEmpresa}/usuarios/{idUsuario}/estado")
     public ResponseEntity<Void> cambiarEstado(
             @PathVariable Long idEmpresa,
@@ -100,7 +100,9 @@ public class UsuariosControlador {
         return ResponseEntity.ok().build();
     }
 
-    @PreAuthorize("hasRole('ADMIN') or hasAuthority('roles:eliminar')")
+    @PreAuthorize("@authz.enEmpresa(#idEmpresa, authentication) and" +
+            " (hasRole('ADMIN') or @authz.esAdminEmpresa(#idEmpresa, authentication) or " +
+            "hasAuthority('roles:eliminar'))")
     @DeleteMapping("/empresas/{idEmpresa}/usuarios/{idUsuario}/roles/{codigoRol}")
     public ResponseEntity<Void> quitarRol(
             @PathVariable Long idEmpresa,
@@ -113,7 +115,9 @@ public class UsuariosControlador {
         return ResponseEntity.ok().build();
     }
 
-    @PreAuthorize("hasRole('ADMIN') or hasAuthority('roles:asignar')")
+    @PreAuthorize("@authz.enEmpresa(#idEmpresa, authentication) and " +
+            "(hasRole('ADMIN') or @authz.esAdminEmpresa(#idEmpresa, authentication) or " +
+            "hasAuthority('roles:asignar'))")
     @PutMapping("/empresas/{idEmpresa}/usuarios/{idUsuario}/roles")
     public ResponseEntity<Void> reemplazarRoles(
             @PathVariable Long idEmpresa,
@@ -125,23 +129,24 @@ public class UsuariosControlador {
         usuariosServicio.reemplazarRoles(idEmpresa, idUsuario, request.getRoles());
         return ResponseEntity.ok().build();
     }
-
-    @GetMapping("/me")
-    public ResponseEntity<PerfilUsuarioDto> miPerfil(
-            @RequestParam Long empresaId,
+    @PreAuthorize("@authz.enEmpresa(#idEmpresa, authentication)")
+    @GetMapping("/empresas/{idEmpresa}/me")
+    public ResponseEntity<PerfilUsuarioDto> miPerfilEmpresa(
+            @PathVariable Long idEmpresa,
             @AuthenticationPrincipal Jwt jwt
     ) {
         String keycloakId = jwt.getSubject();
-
-        // ✅ roles para UI directamente desde el token (client roles de erp-backend)
         List<String> rolesToken = jwt.getClaim("resource_access") instanceof java.util.Map<?,?> ra
                 && ra.get("erp-backend") instanceof java.util.Map<?,?> client
                 && client.get("roles") instanceof java.util.Collection<?> roles
                 ? roles.stream().map(Object::toString).toList()
                 : List.of();
 
+        usuariosServicio.validarPerteneceEmpresa(idEmpresa, keycloakId);
+
         return ResponseEntity.ok(
-                usuariosServicio.obtenerMiPerfil(empresaId, keycloakId, rolesToken)
+                usuariosServicio.obtenerMiPerfil(idEmpresa, keycloakId, rolesToken)
         );
     }
+
 }
