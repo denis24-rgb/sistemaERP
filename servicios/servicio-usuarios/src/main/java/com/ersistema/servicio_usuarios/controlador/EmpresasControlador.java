@@ -14,7 +14,7 @@ import org.springframework.web.bind.annotation.*;
 public class EmpresasControlador {
     private final UsuariosServicio usuariosServicio;
 
-    @PreAuthorize("hasAuthority('ADMIN')")
+    @PreAuthorize("hasRole('ADMIN')")
     @PostMapping
     public ResponseEntity<CrearEmpresaResponse> crear(@Valid @RequestBody CrearEmpresaRequest request) {
         Long id = usuariosServicio.crearEmpresa(request);

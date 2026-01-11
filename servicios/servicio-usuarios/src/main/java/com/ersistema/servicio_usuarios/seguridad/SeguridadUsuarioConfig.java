@@ -19,21 +19,22 @@ import java.util.*;
 @EnableMethodSecurity
 public class SeguridadUsuarioConfig {
 
-    private static final String CLIENT_ID = "erp-backend"; // <- debe coincidir con tu token
+    private static final String CLIENT_ID = "erp-backend"; // Debe coincidir con resource_access.<clientId>
+    private static final String GROUPS_CLAIM = "groups";
 
     @Bean
     public SecurityFilterChain seguridad(HttpSecurity http) throws Exception {
         return http
                 .csrf(csrf -> csrf.disable())
                 .authorizeHttpRequests(auth -> auth
-                        // ✅ Swagger / OpenAPI
+                        // Swagger / OpenAPI
                         .requestMatchers(
                                 "/swagger-ui.html",
                                 "/swagger-ui/**",
                                 "/v3/api-docs/**"
                         ).permitAll()
 
-                        // ✅ Actuator (si lo usas)
+                        // Actuator (en dev ok; en prod lo restringimos)
                         .requestMatchers("/actuator/**").permitAll()
 
                         // todo lo demás protegido
@@ -61,17 +62,7 @@ public class SeguridadUsuarioConfig {
             Collection<GrantedAuthority> fromScopes = scopes.convert(jwt);
             if (fromScopes != null) authorities.addAll(fromScopes);
 
-            // 2) realm_access.roles -> ROLE_*
-            Map<String, Object> realmAccess = jwt.getClaim("realm_access");
-            if (realmAccess != null) {
-                Object rolesObj = realmAccess.get("roles");
-                if (rolesObj instanceof Collection<?> roles) {
-                    for (Object r : roles) {
-                        authorities.add(new SimpleGrantedAuthority("ROLE_" + r.toString()));
-                    }
-                }
-            }
-// 3) resource_access[CLIENT_ID].roles
+            // 2) CLIENT ROLES: resource_access[CLIENT_ID].roles
             Map<String, Object> resourceAccess = jwt.getClaim("resource_access");
             if (resourceAccess != null) {
                 Object clientObj = resourceAccess.get(CLIENT_ID);
@@ -79,24 +70,64 @@ public class SeguridadUsuarioConfig {
                     Object clientRolesObj = clientMap.get("roles");
                     if (clientRolesObj instanceof Collection<?> clientRoles) {
                         for (Object r : clientRoles) {
-                            String role = r.toString();
+                            String roleOrPerm = r.toString();
 
-                            // Si es un rol de negocio (ADMIN, VENTAS, COMPRAS) => también como ROLE_*
-                            if (role.matches("^[A-Z0-9_]+$")) {
-                                authorities.add(new SimpleGrantedAuthority("ROLE_" + role));
+                            // Roles tipo ADMIN, VENTAS, COMPRAS -> ROLE_*
+                            if (roleOrPerm.matches("^[A-Z0-9_]+$")) {
+                                authorities.add(new SimpleGrantedAuthority("ROLE_" + roleOrPerm));
                             }
 
-                            // Siempre agregarlo como authority plano (para permisos tipo roles:asignar)
-                            authorities.add(new SimpleGrantedAuthority(role));
+                            // Siempre agregarlo como authority plano (para permisos tipo ventas:write, roles:asignar)
+                            authorities.add(new SimpleGrantedAuthority(roleOrPerm));
                         }
                     }
                 }
             }
 
+            // 3) GROUPS: "/empresa-<id>/<ROL>" -> "EMPRESA_<id>_<ROL>"
+            Object groupsObj = jwt.getClaim(GROUPS_CLAIM);
+            if (groupsObj instanceof Collection<?> groups) {
+                for (Object g : groups) {
+                    if (g == null) continue;
+                    String groupPath = g.toString().trim();
+                    String empresaAuthority = parseEmpresaAuthority(groupPath);
+                    if (empresaAuthority != null) {
+                        authorities.add(new SimpleGrantedAuthority(empresaAuthority));
+                    }
+                }
+            }
 
             return authorities;
         });
 
         return converter;
+    }
+
+    /**
+     * Convierte: "/empresa-3/VENTAS" -> "EMPRESA_3_VENTAS"
+     * Retorna null si no cumple el formato esperado.
+     */
+    private String parseEmpresaAuthority(String groupPath) {
+        if (groupPath == null || groupPath.isBlank()) return null;
+
+        // Acepta con o sin slash inicial
+        String normalized = groupPath.startsWith("/") ? groupPath.substring(1) : groupPath;
+
+        // Esperamos: empresa-<id>/<ROL>
+        String[] parts = normalized.split("/");
+        if (parts.length != 2) return null;
+
+        String empresaPart = parts[0]; // "empresa-3"
+        String rolPart = parts[1];     // "VENTAS" o "ADMIN"
+
+        if (!empresaPart.startsWith("empresa-")) return null;
+
+        String idStr = empresaPart.substring("empresa-".length());
+        if (idStr.isBlank()) return null;
+
+        // Seguridad básica: rol en mayúsculas/números/guión bajo
+        if (!rolPart.matches("^[A-Z0-9_]+$")) return null;
+
+        return "EMPRESA_" + idStr + "_" + rolPart;
     }
 }

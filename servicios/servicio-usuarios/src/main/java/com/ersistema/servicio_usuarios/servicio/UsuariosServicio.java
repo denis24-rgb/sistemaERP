@@ -188,6 +188,9 @@ public class UsuariosServicio {
         EmpresaUsuario eu = empresaUsuarioRepo
                 .findByEmpresa_IdEmpresaAndUsuario_IdUsuarioErp(idEmpresa, usuario.getIdUsuarioErp())
                 .orElseThrow(() -> new NotFoundException("El usuario no pertenece a la empresa"));
+        if (!Boolean.TRUE.equals(eu.getEstado())) {
+            throw new ForbiddenException("Tu usuario está inactivo en la empresa: " + idEmpresa);
+        }
 
         return PerfilUsuarioDto.builder()
                 .idUsuario(usuario.getIdUsuarioErp())
